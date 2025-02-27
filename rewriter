@@ -1,0 +1,144 @@
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.HashSet;
+import java.util.Set;
+
+public class MavenCompileParser {
+
+    public static void main(String[] args) throws IOException {
+        // Run Maven compile command
+        Process process = new ProcessBuilder("mvn", "compile").start();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+
+        Set<String> missingClasses = new HashSet<>();
+        
+        String line;
+        while ((line = reader.readLine()) != null) {
+            // Look for lines that indicate missing classes
+            if (line.contains("cannot find symbol") && line.contains("class")) {
+                String className = extractClassName(line);
+                if (className != null) {
+                    missingClasses.add(className);
+                }
+            }
+        }
+
+        // Print all missing classes
+        System.out.println("Missing classes:");
+        for (String missingClass : missingClasses) {
+            System.out.println(missingClass);
+        }
+    }
+
+    // A simple method to extract class names from Maven error output
+    private static String extractClassName(String line) {
+        int start = line.indexOf("class") + 6; // "class " has 6 characters
+        int end = line.indexOf(' ', start);
+        if (end == -1) {
+            end = line.length();
+        }
+        return line.substring(start, end).trim();
+    }
+}
+
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class ClassToDependencyMapper {
+
+    // Simple class-to-dependency mapping
+    private static final Map<String, String> classToDependencyMap = new HashMap<>();
+
+    static {
+        classToDependencyMap.put("org.springframework.beans.factory.annotation.Autowired", "org.springframework:spring-context");
+        classToDependencyMap.put("org.springframework.web.bind.annotation.RestController", "org.springframework.boot:spring-boot-starter-web");
+        classToDependencyMap.put("javax.persistence.Entity", "javax.persistence:javax.persistence-api");
+        // Add more mappings as needed
+    }
+
+    public static String getDependencyForClass(String className) {
+        return classToDependencyMap.get(className);
+    }
+}
+
+
+import org.jdom2.Document;
+import org.jdom2.Element;
+import org.jdom2.input.SAXBuilder;
+import org.jdom2.output.XMLOutputter;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.util.List;
+
+public class PomUpdater {
+
+    public static void addDependencyToPom(File pomFile, String dependency) throws Exception {
+        SAXBuilder saxBuilder = new SAXBuilder();
+        Document document = saxBuilder.build(pomFile);
+        Element rootElement = document.getRootElement();
+
+        // Locate the dependencies section
+        Element dependenciesElement = rootElement.getChild("dependencies");
+        if (dependenciesElement == null) {
+            dependenciesElement = new Element("dependencies");
+            rootElement.addContent(dependenciesElement);
+        }
+
+        // Check if the dependency is already added
+        List<Element> existingDeps = dependenciesElement.getChildren("dependency");
+        for (Element dep : existingDeps) {
+            if (dep.getChild("artifactId").getText().equals(dependency.split(":")[1])) {
+                return; // Dependency already exists
+            }
+        }
+
+        // Add new dependency
+        String[] depParts = dependency.split(":");
+        Element dependencyElement = new Element("dependency");
+        dependencyElement.addContent(new Element("groupId").setText(depParts[0]));
+        dependencyElement.addContent(new Element("artifactId").setText(depParts[1]));
+        dependencyElement.addContent(new Element("version").setText("LATEST")); // You can replace this with a specific version
+
+        dependenciesElement.addContent(dependencyElement);
+
+        // Save the updated pom.xml
+        XMLOutputter xmlOutputter = new XMLOutputter();
+        try (FileWriter writer = new FileWriter(pomFile)) {
+            xmlOutputter.output(document, writer);
+        }
+    }
+}
+
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.HashSet;
+import java.util.Set;
+
+public class AutoDependencyAdder {
+
+    public static void main(String[] args) throws IOException {
+        // Run Maven compile command and capture missing classes
+        Set<String> missingClasses = MavenCompileParser.runMavenCompile();
+
+        // Map missing classes to Maven dependencies and add them to pom.xml
+        for (String className : missingClasses) {
+            String dependency = ClassToDependencyMapper.getDependencyForClass(className);
+            if (dependency != null) {
+                // Add the missing dependency to pom.xml
+                File pomFile = new File("pom.xml");
+                try {
+                    PomUpdater.addDependencyToPom(pomFile, dependency);
+                    System.out.println("Added dependency: " + dependency);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+}
