@@ -1,0 +1,159 @@
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+
+public class CompileAndCaptureErrors {
+
+    public static String compileProject(String projectDir) throws Exception {
+        // Run the Maven compile command
+        ProcessBuilder processBuilder = new ProcessBuilder("mvn", "compile");
+        processBuilder.directory(new java.io.File(projectDir));
+        Process process = processBuilder.start();
+
+        // Capture the output
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+
+        // Capture error output
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+
+        // Wait for the process to finish
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new Exception("Maven compile failed. Check the output for errors.");
+        }
+
+        return output.toString();
+    }
+}
+
+
+
+
+
+import java.util.*;
+import java.util.regex.*;
+
+public class ErrorParser {
+
+    private static final Pattern missingClassPattern = Pattern.compile("cannot find symbol\\s+symbol:\\s+class\\s+(\\S+)");
+
+    public static Set<String> extractMissingClasses(String compileOutput) {
+        Set<String> missingClasses = new HashSet<>();
+
+        // Find all occurrences of missing classes
+        Matcher matcher = missingClassPattern.matcher(compileOutput);
+        while (matcher.find()) {
+            missingClasses.add(matcher.group(1));
+        }
+
+        return missingClasses;
+    }
+}
+
+
+
+import java.util.*;
+
+public class DependencyMapper {
+
+    // A simple mapping of classes to Maven dependencies
+    private static final Map<String, String> classToDependencyMap = new HashMap<>();
+
+    static {
+        classToDependencyMap.put("org.springframework.beans.factory.annotation.Autowired", "org.springframework:spring-context");
+        classToDependencyMap.put("org.springframework.web.bind.annotation.RestController", "org.springframework.boot:spring-boot-starter-web");
+        classToDependencyMap.put("javax.persistence.Entity", "javax.persistence:javax.persistence-api");
+        // Add more mappings as needed
+    }
+
+    public static Set<String> getDependenciesForClasses(Set<String> missingClasses) {
+        Set<String> dependencies = new HashSet<>();
+        for (String missingClass : missingClasses) {
+            if (classToDependencyMap.containsKey(missingClass)) {
+                dependencies.add(classToDependencyMap.get(missingClass));
+            }
+        }
+        return dependencies;
+    }
+}
+
+
+
+
+import org.jdom2.*;
+import org.jdom2.input.SAXBuilder;
+import org.jdom2.output.XMLOutputter;
+
+import java.io.*;
+import java.util.Set;
+
+public class PomUpdater {
+
+    public static void updatePomWithDependencies(File pomFile, Set<String> dependencies) throws Exception {
+        SAXBuilder saxBuilder = new SAXBuilder();
+        Document document = saxBuilder.build(pomFile);
+        Element rootElement = document.getRootElement();
+
+        // Locate or create the dependencies section
+        Element dependenciesElement = rootElement.getChild("dependencies");
+        if (dependenciesElement == null) {
+            dependenciesElement = new Element("dependencies");
+            rootElement.addContent(dependenciesElement);
+        }
+
+        // Add missing dependencies
+        for (String dependency : dependencies) {
+            String[] parts = dependency.split(":");
+            Element dependencyElement = new Element("dependency");
+            dependencyElement.addContent(new Element("groupId").setText(parts[0]));
+            dependencyElement.addContent(new Element("artifactId").setText(parts[1]));
+            dependencyElement.addContent(new Element("version").setText("LATEST"));
+            dependenciesElement.addContent(dependencyElement);
+        }
+
+        // Save the updated pom.xml
+        XMLOutputter outputter = new XMLOutputter(Format.getPrettyFormat());
+        try (FileWriter writer = new FileWriter(pomFile)) {
+            outputter.output(document, writer);
+        }
+    }
+}
+
+
+
+import java.io.File;
+import java.util.Set;
+
+public class AddDependenciesFromErrors {
+
+    public static void main(String[] args) {
+        try {
+            String projectDir = "/path/to/your/project"; // Specify project path
+            String compileOutput = CompileAndCaptureErrors.compileProject(projectDir);
+
+            Set<String> missingClasses = ErrorParser.extractMissingClasses(compileOutput);
+            Set<String> missingDependencies = DependencyMapper.getDependenciesForClasses(missingClasses);
+
+            // Scan the modules for pom.xml files and update them
+            List<File> pomFiles = PomFileScanner.findPomFiles(projectDir);
+            for (File pomFile : pomFiles) {
+                PomUpdater.updatePomWithDependencies(pomFile, missingDependencies);
+            }
+
+            System.out.println("Missing dependencies have been added to the respective pom.xml files.");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
